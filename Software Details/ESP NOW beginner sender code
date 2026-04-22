@@ -1,0 +1,27 @@
+##ESP NOW sender code without using the game mechanics just to test if both of them are connecting (SUCCESSFUL)
+
+import network
+import espnow
+import time
+
+# Activate WiFi
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+
+# Init ESP-NOW
+e = espnow.ESPNow()
+e.active(True)
+
+# receiver mac
+peer = b'pK\xcan\x8e\xe4
+e.add_peer(peer)
+
+count = 0
+
+while True:
+    msg = "HELLO {}".format(count)
+    e.send(peer, msg)
+    print("Sent:", msg)
+
+    count += 1
+    time.sleep(1)
