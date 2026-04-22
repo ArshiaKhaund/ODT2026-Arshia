@@ -1,0 +1,51 @@
+##BEGINNER:
+##Servo
+import network
+import time
+import espnow
+from machine import Pin, I2C
+from pca9685 import PCA9685
+from servo import Servo
+
+# WiFi
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+
+e = espnow.ESPNow()
+e.active(True)
+
+# I2C + PCA9685
+i2c = I2C(0, scl=Pin(19), sda=Pin(18))
+pca = PCA9685(i2c)
+pca.freq(50)
+
+# Servos
+servo_up = Servo(pca.channels[0])
+servo_down = Servo(pca.channels[3])
+servo_left = Servo(pca.channels[4])
+servo_right = Servo(pca.channels[6])
+
+def move_servo(servo):
+    servo.angle(65)
+    time.sleep(0.2)
+    servo.angle(0)
+
+while True:
+    host, msg = e.recv()
+
+    if msg:
+        command = msg.decode()
+        print("Received:", command)
+
+        if command == "UP":
+            move_servo(servo_up)
+
+        elif command == "DOWN":
+            move_servo(servo_down)
+
+        elif command == "LEFT":
+            move_servo(servo_left)
+
+        elif command == "RIGHT":
+            move_servo(servo_right)
+
