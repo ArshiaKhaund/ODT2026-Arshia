@@ -1,0 +1,107 @@
+#minor changes were made to this code as it was used in the final stages as well as developemental 
+
+import network
+import espnow
+import time
+from machine import Pin, I2C
+from pca9685 import PCA9685
+
+#esp now setup
+sta = network.WLAN(network.STA_IF)
+sta.active(True)
+
+e = espnow.ESPNow()
+e.active(True)
+
+# settup up servo driver
+i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
+pca = PCA9685(i2c)
+pca.freq(50)  # 50Hz for servos
+
+# channels for the servo to connect 
+LEFT_LEG  = 0
+RIGHT_LEG = 3
+RIGHT_ARM = 4
+LEFT_ARM  = 6
+
+def angle_to_duty(angle):
+    # Maps 0-180 degrees to PCA9685 duty cycle (approx 150-600)
+    min_duty = 150
+    max_duty = 600
+    return int(min_duty + (angle / 180) * (max_duty - min_duty))
+
+def set_servo(channel, angle):
+    angle = max(0, min(180, angle))  # clamp to 0-180
+    pca.duty(channel, angle_to_duty(angle))
+
+def reset_all():
+    set_servo(LEFT_LEG,  90)
+    set_servo(RIGHT_LEG, 90)
+    set_servo(RIGHT_ARM, 90)
+    set_servo(LEFT_ARM,  90)
+
+def stop_all():
+    set_servo(LEFT_LEG,  0)
+    set_servo(RIGHT_LEG, 0)
+    set_servo(RIGHT_ARM, 0)
+    set_servo(LEFT_ARM,  0)
+
+# --- MOVEMENT FUNCTIONS ---
+def move_left():
+    # Left arm + right leg swing left (45°)
+    set_servo(LEFT_ARM,  45)
+    set_servo(RIGHT_LEG, 45)
+    # Other two go opposite to balance
+    set_servo(RIGHT_ARM, 135)
+    set_servo(LEFT_LEG,  135)
+
+def move_right():
+    # Right arm + left leg swing right (135°)
+    set_servo(RIGHT_ARM, 135)
+    set_servo(LEFT_LEG,  135)
+    # Other two go opposite to balance
+    set_servo(LEFT_ARM,  45)
+    set_servo(RIGHT_LEG, 45)
+
+def move_up():
+    # Both legs lift up (45°)
+    set_servo(LEFT_LEG,  45)
+    set_servo(RIGHT_LEG, 45)
+    # Arms stay neutral
+    set_servo(LEFT_ARM,  90)
+    set_servo(RIGHT_ARM, 90)
+
+def move_down():
+    # Everything drops to full 0
+    stop_all()
+
+
+reset_all()
+print("Receiver ready, waiting for input...")
+
+# main loop
+while True:
+    host, msg = e.recv()
+
+    if msg is None:
+        continue
+
+    print("Received:", msg)
+
+    if msg == b'left':
+        move_left()
+
+    elif msg == b'right':
+        move_right()
+
+    elif msg == b'up':
+        move_up()
+
+    elif msg == b'down':
+        move_down()
+
+    elif msg == b'start':
+        reset_all()   # neutral position on start
+
+    elif msg == b'stop':
+        stop_all()    # full 0 on stop
