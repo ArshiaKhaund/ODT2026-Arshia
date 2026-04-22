@@ -1,0 +1,234 @@
+##this is the final esp now sender code integrated with the oled animations as well as the game
+
+import network
+import espnow
+from machine import Pin, I2C
+import time
+import random
+import framebuf
+import sh1106
+import ssd1306
+
+#  Animation Frame Imports 
+import idle
+import up
+import down
+import left
+import right
+import error
+
+
+SCL_PIN = 18
+SDA_PIN = 19
+
+# SSD1306 Pins for the second display
+SSD1306_SCL = 22
+SSD1306_SDA = 23
+
+
+game_right_button_pin = 12
+game_down_button_pin   = 14
+game_up_button_pin     = 32
+game_left_button_pin   = 27
+
+LANE_WIDTH = 24
+HIT_LINE_Y = 43
+GOOD_WINDOW = 250
+
+
+reciever_motor_esp = b'\xE0\x8C\xFE\x32\xB5\x48' # Placeholder: Replace with your Motor ESP's MAC address
+
+wifi = network.WLAN(network.STA_IF)
+wifi.active(True)
+wifi.config(pm=wifi.PM_NONE) # Disable power management for better ESP-NOW reliability
+
+e = espnow.ESPNow()
+e.active(True)
+e.add_peer(reciever_motor_esp)
+
+
+send_up = Pin(13, Pin.IN, Pin.PULL_UP)
+send_down = Pin(12, Pin.IN, Pin.PULL_UP)
+send_left = Pin(14, Pin.IN, Pin.PULL_UP)
+send_right = Pin(27, Pin.IN, Pin.PULL_UP)
+send_jump = Pin(26, Pin.IN, Pin.PULL_UP)
+send_start = Pin(25, Pin.IN, Pin.PULL_UP)
+send_stop = Pin(26, Pin.IN, Pin.PULL_UP) # Note: This pin is duplicated with 'send_jump'. Ensure this is intentional or correct it.
+
+
+# Initialize I2C 0 for the SH1106 Game Display
+i2c0 = I2C(0, scl=Pin(SCL_PIN), sda=Pin(SDA_PIN), freq=400000)
+display = sh1106.SH1106_I2C(128, 64, i2c0)
+
+# Initialize I2C 1 for the SSD1306 Animation Display
+i2c1 = I2C(1, scl=Pin(SSD1306_SCL), sda=Pin(SSD1306_SDA), freq=400000)
+anim_display = ssd1306.SSD1306_I2C(128, 64, i2c1)
+
+
+anim_buffer = bytearray(128 * 8)
+anim_fb = framebuf.FrameBuffer(anim_buffer, 128, 64, framebuf.MONO_VLSB)
+
+def update_ssd1306_animation(state):
+    """Selects the correct bytearray and updates the SSD1306 display."""
+    if state == "up":
+        data = up.bitmap_data
+    elif state == "down":
+        data = down.bitmap_data
+    elif state == "left":
+        data = left.bitmap_data
+    elif state == "right":
+        data = right.bitmap_data
+    elif state == "error":
+        data = error.bitmap_data
+    else:
+        data = idle.bitmap_data
+    
+    
+    temp_fb = framebuf.FrameBuffer(data, 128, 64, framebuf.MONO_HLSB)
+    anim_fb.fill(0)
+    anim_fb.blit(temp_fb, 0, 0)
+    anim_display.buffer = anim_buffer
+    anim_display.show()
+
+# Initialize game button pins with internal PULL_UP
+game_pins = [
+    Pin(game_right_button_pin, Pin.IN, Pin.PULL_UP),
+    Pin(game_down_button_pin,   Pin.IN, Pin.PULL_UP),
+    Pin(game_up_button_pin,     Pin.IN, Pin.PULL_UP),
+    Pin(game_left_button_pin,   Pin.IN, Pin.PULL_UP)
+]
+
+# arrow bitmaps on sh1106
+arrow_left = bytearray([0x18,0x3C,0x7E,0x18,0x18,0x18,0x00,0x00])
+arrow_right = bytearray([0x18,0x18,0x18,0x7E,0x3C,0x18,0x00,0x00])
+arrow_up = bytearray([0x10,0x18,0x1C,0xFE,0x1C,0x18,0x10,0x00])
+arrow_down = bytearray([0x08,0x18,0x38,0xFE,0x38,0x18,0x08,0x00])
+
+def draw_arrow_direction(x, y, direction):
+    """Draws the small arrows on the SH1106 game lanes."""
+    if direction == "up":
+        fb = framebuf.FrameBuffer(arrow_up, 8, 8, framebuf.MONO_VLSB)
+    elif direction == "down":
+        fb = framebuf.FrameBuffer(arrow_down, 8, 8, framebuf.MONO_VLSB)
+    elif direction == "left":
+        fb = framebuf.FrameBuffer(arrow_left, 8, 8, framebuf.MONO_VLSB)
+    else:
+        fb = framebuf.FrameBuffer(arrow_right, 8, 8, framebuf.MONO_VLSB)
+    display.blit(fb, x-4, y-4)
+
+# game setup
+combo = 0
+errors = 0
+last_hit_time = 0
+animation_frame = 0
+pet_state = "idle"
+last_game_btn_states = [False, False, False, False] # For game's physical buttons
+
+#note generation
+notes = []
+current_note_time = 2000
+for i in range(50):
+    current_note_time += 2000
+    notes.append({
+        "time": current_note_time,
+        "lane": random.randint(0, 3),
+        "hit": False,
+        "passed": False
+    })
+
+# -main game loop
+def main():
+    global combo, errors, pet_state, animation_frame, last_hit_time, last_game_btn_states
+
+    start_time = time.ticks_ms()
+    current_anim_state = "idle"
+    update_ssd1306_animation("idle") # Initial pet state
+
+    while True:
+        display.fill(0)
+        current_time = time.ticks_diff(time.ticks_ms(), start_time)
+
+        # read and send input esp now
+        # Read the state of the dedicated ESP-NOW sender buttons
+        espnow_data = "{},{},{},{},{},{},{}".format(
+            send_up.value(),
+            send_down.value(),
+            send_left.value(),
+            send_right.value(),
+            send_jump.value(),
+            send_start.value(),
+            send_stop.value()
+        )
+        e.send(reciever_motor_esp, espnow_data)
+
+        # Draw Lanes on SH1106
+        for i in range(5):
+            display.vline(i * LANE_WIDTH, 0, 64, 1)
+        display.hline(0, HIT_LINE_Y, LANE_WIDTH * 4, 1)
+
+        
+        # This uses the game's own physical buttons, not the ESP-NOW sent buttons
+        current_game_btn_states = [not p.value() for p in game_pins]
+        game_btn_pressed = [False, False, False, False]
+        for i in range(4):
+            if current_game_btn_states[i] and not last_game_btn_states[i]:
+                game_btn_pressed[i] = True
+        last_game_btn_states = current_game_btn_states # Update last_game_btn_states with the current states
+
+        # hit detection
+        for note in notes:
+            if not note["hit"] and not note["passed"]:
+                dist = note["time"] - current_time
+                y = int(HIT_LINE_Y - (dist / 30))
+                lane = note["lane"]
+                direction = ["right", "down", "up", "left"][lane]
+
+                if -10 < y < 64:
+                    lane_x = lane * LANE_WIDTH + (LANE_WIDTH // 2)
+                    draw_arrow_direction(lane_x, y, direction)
+
+                # Hit Detection Logic
+                if abs(dist) < GOOD_WINDOW:
+                    if game_btn_pressed[lane]: # Use game_btn_pressed for game logic
+                        print("NICE - {} HIT".format(direction.upper()))
+                        note["hit"] = True
+                        combo += 1
+                        pet_state = direction # Trigger direction animation
+                        last_hit_time = current_time
+                        game_btn_pressed[lane] = False
+                
+                # Miss Detection Logic
+                elif dist < -GOOD_WINDOW:
+                    note["passed"] = True
+                    errors += 1
+                    print("ERROR: {} MISSED".format(direction.upper()))
+                    pet_state = "error" # Trigger error animation
+                    last_hit_time = current_time
+
+        # Wrong Button Detection
+        if any(game_btn_pressed):
+            for i in range(4):
+                if game_btn_pressed[i]:
+                    print("WRONG BUTTON PRESSED: Lane {}".format(i))
+            pet_state = "error" # Trigger error animation
+            last_hit_time = current_time
+
+        # Reset pet to idle after 500ms
+        if time.ticks_diff(current_time, last_hit_time) > 500:
+            pet_state = "idle"
+
+        # animation update
+        if pet_state != current_anim_state:
+            update_ssd1306_animation(pet_state)
+            current_anim_state = pet_state
+
+        # ui text on sh1106
+        display.text("E:{}".format(errors), 98, 30, 1)
+        display.text("C:{}".format(combo), 98, 50, 1)
+
+        display.show()
+        time.sleep_ms(5) # Small delay for game loop
+
+if __name__ == "__main__":
+    main()
+
