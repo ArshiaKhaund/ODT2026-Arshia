@@ -1,0 +1,43 @@
+##to check if the push buttons work and are taking the right arrow input
+
+import machine
+import time
+import ssd1306
+
+# OLED I2C setup
+i2c = machine.I2C(0, scl=machine.Pin(22), sda=machine.Pin(23))
+oled = ssd1306.SSD1306_I2C(128, 64, i2c)
+
+# Buttons (adjust pins if needed)
+btn_up = machine.Pin(27, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_down = machine.Pin(26, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_left = machine.Pin(25, machine.Pin.IN, machine.Pin.PULL_UP)
+btn_right = machine.Pin(33, machine.Pin.IN, machine.Pin.PULL_UP)
+
+def show(text):
+    oled.fill(0)
+    oled.text("BTN:", 0, 10)
+    oled.text(text, 40, 30)
+    oled.show()
+
+while True:
+    if not btn_up.value():
+        print("UP")
+        show("UP")
+
+    elif not btn_down.value():
+        print("DOWN")
+        show("DOWN")
+
+    elif not btn_left.value():
+        print("LEFT")
+        show("LEFT")
+
+    elif not btn_right.value():
+        print("RIGHT")
+        show("RIGHT")
+
+    else:
+        show("WAIT")
+
+    time.sleep(0.05)
